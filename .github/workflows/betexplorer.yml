@@ -1,0 +1,26 @@
+name: BetExplorer Bot
+on:
+  schedule:
+    - cron: '0,20,40 * * * *'
+  workflow_dispatch:
+jobs:
+  run_bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - run: pip install -r requirements.txt
+      - env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHANNEL: ${{ secrets.TG_CHANNEL }}
+        run: python main.py
+      - run: |
+          git config user.name "Bot"
+          git config user.email "bot@bot.com"
+          git add history.json
+          git commit -m "Update history" || echo "No changes"
+          git push
