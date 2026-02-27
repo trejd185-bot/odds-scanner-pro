@@ -5,7 +5,7 @@ TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
 URL = "https://www.betexplorer.com/dropping-odds/"
 HISTORY_FILE = "history.json"
-MIN_DROP = 10.0
+MIN_DROP = 1.0
 
 def save_history(data):
     try:
