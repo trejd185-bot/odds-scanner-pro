@@ -13,11 +13,20 @@ from selenium.webdriver.support import expected_conditions as EC
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
 
+# Ссылки (Футбол, Баскетбол, Теннис, Хоккей)
 SPORTS = {
-    '⚽ Футбол': "https://www.betexplorer.com/popular-bets/soccer/",
-    '🏀 Баскетбол': "https://www.betexplorer.com/popular-bets/basketball/",
-    '🎾 Теннис': "https://www.betexplorer.com/popular-bets/tennis/",
-    '🏒 Хоккей': "https://www.betexplorer.com/popular-bets/hockey/"
+    'ФУТБОЛ': "https://www.betexplorer.com/popular-bets/soccer/",
+    'ТЕННИС': "https://www.betexplorer.com/popular-bets/tennis/",
+    'БАСКЕТБОЛ': "https://www.betexplorer.com/popular-bets/basketball/",
+    'ХОККЕЙ': "https://www.betexplorer.com/popular-bets/hockey/"
+}
+
+# Словарь иконок
+ICONS = {
+    'ФУТБОЛ': '⚽',
+    'ТЕННИС': '🎾',
+    'БАСКЕТБОЛ': '🏀',
+    'ХОККЕЙ': '🏒'
 }
 
 def send_telegram(text):
@@ -28,142 +37,127 @@ def send_telegram(text):
                       json={'chat_id': TG_CHANNEL, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True})
     except Exception as e: print(f"Err TG: {e}")
 
-def get_readable_pick(match_name, pick_raw):
-    """Превращает '1' в 'Real Madrid', '2' в 'Barcelona'"""
+def format_pick(match_name, pick_raw):
+    """Красиво оформляет исход: '1' -> 'Победа 1 (Real Madrid)'"""
     try:
-        # Очищаем исход от мусора (иногда там пробелы)
-        pick = pick_raw.strip()
+        pick = pick_raw.strip().upper()
         
-        # Разделяем название матча "Team A - Team B"
+        # Разделяем команды по тире
         teams = match_name.split(' - ')
         
-        if len(teams) == 2:
+        # Если удалось разделить названия команд
+        if len(teams) >= 2:
             home_team = teams[0].strip()
             away_team = teams[1].strip()
             
             if pick == '1':
-                return f"Победа 1: <b>{home_team}</b>"
+                return f"Победа 1 <b>({home_team})</b>"
             elif pick == '2':
-                return f"Победа 2: <b>{away_team}</b>"
-            elif pick.upper() == 'X':
-                return "Результат: <b>Ничья</b>"
+                return f"Победа 2 <b>({away_team})</b>"
+            elif pick == 'X':
+                return "Ничья <b>(X)</b>"
         
-        # Если не удалось разделить названия или это не 1/X/2
+        # Если это не 1/X/2 или не удалось разделить имена
         return f"Исход: <b>{pick}</b>"
     except:
-        return f"Исход: {pick_raw}"
+        return f"Исход: <b>{pick_raw}</b>"
 
-def run_fix_scanner():
-    # Сообщение о старте (можно убрать потом)
-    send_telegram("🚀 <b>Запуск V3 (Фикс имен)...</b>")
+def run_beautiful_scanner():
+    # Сообщение о старте (можно убрать, если мешает)
+    # send_telegram("🚀 <b>Сканер запущен...</b>")
 
-    # --- МАКСИМАЛЬНАЯ МАСКИРОВКА ---
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    # Реалистичный User-Agent
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
-    # Отключение флагов автоматизации
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
 
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        # Скрипт для скрытия Selenium
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-        total_sent = 0
+        total_found = 0
 
         for sport_name, url in SPORTS.items():
-            print(f"🌍 Иду в {sport_name}...")
+            print(f"🌍 {sport_name}...")
             try:
                 driver.get(url)
                 
-                # Ждем таблицу до 15 секунд (лучше, чем просто sleep)
+                # Ждем таблицу
                 try:
-                    WebDriverWait(driver, 15).until(
+                    WebDriverWait(driver, 10).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-main tr"))
                     )
                 except:
-                    print(f"⚠️ {sport_name}: Таблица не прогрузилась.")
                     continue
 
                 rows = driver.find_elements(By.CSS_SELECTOR, "table.table-main tr")
-                
-                if len(rows) < 2:
-                    continue
+                if len(rows) < 2: continue
 
-                count_sport = 0
+                count = 0
                 
-                # Пропускаем шапку [0]
+                # Проходим по строкам (пропуская шапку)
                 for row in rows[1:]:
                     try:
                         cols = row.find_elements(By.TAG_NAME, "td")
+                        if len(cols) < 4: continue
                         
-                        # Таблица Popular Bets имеет структуру:
-                        # 0: Матч | 1: Исход (Pick) | 2: Кэф | 3: Дата
+                        # 1. Берем название матча ИЗ ССЫЛКИ (чтобы не прилипло время)
+                        # В ячейке [0] есть тег <a> с названием команд
+                        link_element = cols[0].find_element(By.TAG_NAME, "a")
+                        match_name = link_element.text.strip() # Чистое имя без времени
+                        link = link_element.get_attribute("href")
                         
-                        if len(cols) < 3: continue
+                        # 2. Исход (1, X, 2)
+                        pick_raw = cols[1].text.strip()
                         
-                        match_text = cols[0].text.strip() # Например: "Real - Barca"
-                        pick_raw = cols[1].text.strip()   # Например: "1"
-                        odd = cols[2].text.strip()        # Например: "2.12"
+                        # 3. Коэффициент
+                        odd = cols[2].text.strip()
                         
-                        # ВАЖНО: Иногда сайт меняет колонки местами.
-                        # Проверка: если в pick_raw число с точкой (например 2.12), значит мы взяли не ту колонку
-                        if "." in pick_raw and len(pick_raw) > 2:
-                            # Сдвигаем индексы, если верстка поплыла (редкий случай)
-                            pick_raw = "1?" # Заглушка
+                        # Формируем красивый текст ставки
+                        beautiful_pick = format_pick(match_name, pick_raw)
                         
-                        readable_pick = get_readable_pick(match_text, pick_raw)
-                        
-                        # Ссылка
-                        try:
-                            link = cols[0].find_element(By.TAG_NAME, "a").get_attribute("href")
-                        except:
-                            link = url
+                        # Иконка спорта
+                        icon = ICONS.get(sport_name, '🏆')
 
                         msg = (
-                            f"🔥 <b>POPULAR {sport_name.upper()}</b>\n\n"
-                            f"🏟 <b>{match_text}</b>\n"
-                            f"🎯 {readable_pick}\n"
-                            f"💰 Кэф: {odd}\n"
+                            f"🔥 <b>ТОП ПРОГРУЗ | {sport_name}</b>\n\n"
+                            f"{icon} <b>{match_name}</b>\n"
+                            f"🎯 Выбор: {beautiful_pick}\n"
+                            f"📉 Кэф: <b>{odd}</b>\n\n"
                             f"🔗 <a href='{link}'>Открыть матч</a>"
                         )
                         
                         send_telegram(msg)
                         
-                        count_sport += 1
-                        total_sent += 1
+                        count += 1
+                        total_found += 1
                         
-                        # Берем ТОП-3 матча на каждый спорт
-                        if count_sport >= 3:
+                        # Лимит: 3 лучших матча на каждый спорт
+                        if count >= 3:
                             break
                             
                     except Exception as e:
-                        print(f"Ошибка строки: {e}")
                         continue
                         
             except Exception as e:
-                print(f"Ошибка раздела {sport_name}: {e}")
+                print(f"Ошибка {sport_name}: {e}")
                 continue
 
-        if total_sent == 0:
-            send_telegram("⚠️ Бот прошел все ссылки, но популярных матчей на сегодня нет (или сайт блокирует).")
+        if total_found > 0:
+            send_telegram(f"🏁 <b>Сканирование завершено.</b> Найдено матчей: {total_found}")
         else:
-            send_telegram(f"🏁 <b>Готово.</b> Найдено матчей: {total_sent}")
+            send_telegram("💤 Популярных матчей (прогрузов) сейчас нет.")
 
     except Exception as e:
-        send_telegram(f"❌ Критическая ошибка: {e}")
+        send_telegram(f"❌ Ошибка бота: {e}")
     
     finally:
         if 'driver' in locals():
             driver.quit()
 
 if __name__ == "__main__":
-    run_fix_scanner()
+    run_beautiful_scanner()
