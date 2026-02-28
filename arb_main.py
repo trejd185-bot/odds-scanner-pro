@@ -7,18 +7,29 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 # --- НАСТРОЙКИ ---
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
 
-# Новый источник: BetWatch (Раздел Футбол)
+# Источник: BetWatch
 URL = "https://www.betwatch.fr/en/moneyway-1x2-football"
 
-# Минимальная сумма (Евро), чтобы прислать уведомление
-MIN_MONEY = 5000  # Для теста поставь 1000, потом увеличь до 20000
+# Минимальная сумма (объем рынка) в евро
+MIN_MONEY = 1000  # Поставь пока 1000 для теста, потом подними до 20000
+
+# Файл истории (чтобы не спамить одним и тем же)
+HISTORY_FILE = "history_money.txt"
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r") as f:
+            return f.read().splitlines()
+    return []
+
+def save_history(match_name):
+    with open(HISTORY_FILE, "a") as f:
+        f.write(f"{match_name}\n")
 
 def send_telegram(text):
     print(f"📤 TG: {text}")
@@ -29,15 +40,23 @@ def send_telegram(text):
     except Exception as e: print(f"Err TG: {e}")
 
 def parse_money(text):
-    """Превращает '15 400 €' в число 15400"""
+    """Ищет числа перед знаком €"""
+    # Находит все варианты: 10 000€, 10000 €, 5.5K €
     try:
-        # Убираем € и пробелы
-        clean = re.sub(r'[^\d]', '', text)
-        return int(clean)
-    except: return 0
+        # Удаляем всё кроме цифр и значка евро
+        clean_text = text.replace(" ", "")
+        if "€" in clean_text:
+            # Вытаскиваем число перед евро
+            matches = re.findall(r'(\d+)€', clean_text)
+            if matches:
+                # Берем самое большое число в строке (там может быть несколько)
+                return max([int(m) for m in matches])
+    except:
+        pass
+    return 0
 
-def run_betwatch():
-    print("🚀 Запуск Chrome для BetWatch...")
+def run_scanner():
+    print("🚀 Запуск 'Всеядного' сканера...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -50,82 +69,74 @@ def run_betwatch():
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        print(f"🌍 Перехожу на {URL}...")
+        print(f"🌍 Иду на {URL}...")
         driver.get(URL)
         
-        # Ждем загрузку таблицы (максимум 15 сек)
-        try:
-            WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "table.table"))
-            )
-            print("✅ Таблица загрузилась!")
-        except:
-            print("⚠️ Таймаут ожидания таблицы (возможно, сайт тупит)")
-
-        # Ищем строки таблицы
-        rows = driver.find_elements(By.CSS_SELECTOR, "table.table tbody tr")
-        print(f"📊 Найдено строк: {len(rows)}")
+        # Ждем 20 секунд (на всякий случай, если интернет медленный)
+        time.sleep(20)
         
-        found_matches = 0
+        # Берем ВСЕ строки на сайте (тег <tr>), не глядя на классы
+        rows = driver.find_elements(By.TAG_NAME, "tr")
+        print(f"📊 Всего строк (TR) на сайте: {len(rows)}")
+        
+        if len(rows) < 5:
+            # Если строк мало, значит сайт не прогрузил таблицу
+            body_text = driver.find_element(By.TAG_NAME, "body").text[:200]
+            send_telegram(f"⚠️ Таблица пустая. Текст на сайте:\n{body_text}")
+            driver.quit()
+            return
+
+        history = load_history()
+        matches_found = 0
 
         for row in rows:
-            try:
-                # Получаем текст всей строки
-                text = row.text
-                
-                # Ищем сумму ставок (обычно она в конце или посередине с значком €)
-                # На BetWatch структура: Время | Матч | 1 | X | 2 | Объем
-                
-                cols = row.find_elements(By.TAG_NAME, "td")
-                if len(cols) < 5: continue
-
-                # Название матча (обычно 2-я колонка)
-                match_name = cols[1].text.strip()
-                
-                # Ищем самую большую сумму в ячейках 1, X, 2
-                # Обычно это колонки с процентами и суммами.
-                # BetWatch показывает суммы при наведении, но часто и текстом.
-                # Попробуем найти просто максимальное число с € в строке
-                
-                money_matches = re.findall(r'(\d[\d\s]*)\s?€', text)
-                if not money_matches: continue
-                
-                # Превращаем все найденные суммы в числа и берем максимум
-                amounts = [parse_money(m) for m in money_matches]
-                max_amount = max(amounts)
-                
-                if max_amount >= MIN_MONEY:
-                    # Форматируем для красоты
-                    pretty_sum = "{:,}".format(max_amount).replace(",", " ")
-                    
-                    msg = (
-                        f"💶 <b>BETWATCH MONEY: {pretty_sum} €</b>\n\n"
-                        f"⚽ <b>{match_name}</b>\n"
-                        f"💰 Общий объем ставок\n"
-                        f"🔗 <a href='{URL}'>Перейти на сайт</a>"
-                    )
-                    
-                    send_telegram(msg)
-                    found_matches += 1
-                    
-                    # Ограничитель, чтобы не спамить (максимум 3 матча за запуск)
-                    if found_matches >= 3:
-                        print("Лимит отправки за раз достигнут.")
-                        break
-                        
-            except Exception as e:
+            text = row.text
+            
+            # Если в строке нет значка евро, пропускаем
+            if "€" not in text:
                 continue
 
-        if found_matches == 0:
-            print("Матчей с такой суммой не найдено (или парсинг не удался).")
-            # Тестовое сообщение, чтобы ты знал, что бот смотрел
-            send_telegram(f"🔍 Сканер прошел по BetWatch. Найдено строк: {len(rows)}. Крупных ставок пока нет.")
+            # Пытаемся найти сумму
+            money = parse_money(text)
+            
+            if money >= MIN_MONEY:
+                # Пытаемся найти название матча (обычно там есть время типа 20:00 или : )
+                # Или просто берем первые слова строки
+                lines = text.split('\n')
+                match_name = lines[0] if len(lines) > 0 else "Unknown Match"
+                
+                # Проверка на дубликат
+                if match_name in history:
+                    continue
+                
+                # Форматируем сумму
+                pretty_sum = "{:,}".format(money).replace(",", " ")
+                
+                msg = (
+                    f"💶 <b>MONEY DETECTED: {pretty_sum} €</b>\n\n"
+                    f"⚽ <b>{match_name}</b>\n"
+                    f"🔗 <a href='{URL}'>Смотреть BetWatch</a>"
+                )
+                
+                send_telegram(msg)
+                save_history(match_name)
+                matches_found += 1
+                
+                # Лимит 3 сообщения за раз
+                if matches_found >= 3:
+                    print("Лимит сообщений.")
+                    break
+
+        if matches_found == 0:
+            print("Матчи с деньгами не найдены (или уже были отправлены).")
+            # Можно раскомментировать для теста:
+            # send_telegram(f"🔍 Сканер жив. Проверил {len(rows)} строк. Новых денег >{MIN_MONEY}€ нет.")
 
         driver.quit()
 
     except Exception as e:
         print(f"❌ Критическая ошибка: {e}")
-        send_telegram(f"❌ Ошибка BetWatch: {e}")
+        send_telegram(f"❌ Ошибка скрипта: {e}")
 
 if __name__ == "__main__":
-    run_betwatch()
+    run_scanner()
