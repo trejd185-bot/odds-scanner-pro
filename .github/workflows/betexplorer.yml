@@ -1,26 +1,37 @@
-name: BetExplorer Bot
+name: Real Drop Scanner
+
 on:
   schedule:
-    - cron: '0,20,40 * * * *'
-  workflow_dispatch:
+    # Запуск каждые 30 минут (в 00 и 30 минут каждого часа)
+    - cron: '0,20 * * * *'
+  workflow_dispatch: # Кнопка ручного запуска
+
 jobs:
   run_bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Разрешение на запись истории
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-      - run: pip install -r requirements.txt
-      - env:
+
+      - name: Install dependencies
+        run: pip install selenium webdriver-manager requests
+
+      - name: Run Script
+        env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHANNEL: ${{ secrets.TG_CHANNEL }}
         run: python main.py
-      - run: |
-          git config user.name "Bot"
-          git config user.email "bot@bot.com"
+
+      - name: Save History
+        run: |
+          git config user.name "DropBot"
+          git config user.email "bot@drop.com"
           git add history.json
-          git commit -m "Update history" || echo "No changes"
+          git commit -m "Update match history" || echo "No changes"
           git push
