@@ -1,58 +1,75 @@
-import json, os, time, random, cloudscraper, requests
-from bs4 import BeautifulSoup
+import os
+import time
+import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
 
+# --- НАСТРОЙКИ ---
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
-URL = "https://www.arbworld.net/en/dropping-odds"
-HISTORY_FILE = "arb_history.json"
-MIN_DROP = 10.0
-
-def save_history(data):
-    try:
-        with open(HISTORY_FILE, 'w') as f: json.dump(data[-200:], f)
-    except: pass
+URL = "https://www.arbworld.net/en/moneyway"
 
 def send_telegram(text):
-    requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", 
-                  json={'chat_id': TG_CHANNEL, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True})
-
-def run():
+    print(f"📤 TG: {text}")
+    if not TG_TOKEN or not TG_CHANNEL:
+        print("❌ ОШИБКА: Нет токена/канала!")
+        return
     try:
-        with open(HISTORY_FILE, 'r') as f: history = json.load(f)
-    except: history = []
-    
-    new_history = history.copy()
-    scraper = cloudscraper.create_scraper(browser={'browser': 'firefox', 'platform': 'windows', 'mobile': False})
-    
-    try:
-        resp = scraper.get(URL)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'lxml')
-            table = soup.find('table', class_='items')
-            if table:
-                for row in table.find_all('tr'):
-                    try:
-                        cols = row.find_all('td')
-                        if len(cols) < 8: continue
-                        name = cols[2].get_text(strip=True)
-                        link = cols[2].find('a')['href'] if cols[2].find('a') else name
-                        
-                        best_drop, old_k, new_k = 0, 0, 0
-                        for col in [cols[5], cols[6], cols[7]]: # 1, X, 2 columns
-                            parts = col.get_text(" ", strip=True).split()
-                            if len(parts) >= 2:
-                                s, c = float(parts[0]), float(parts[1])
-                                if s > c:
-                                    drop = ((s - c) / s) * 100
-                                    if drop > best_drop: best_drop, old_k, new_k = drop, s, c
-                        
-                        if best_drop >= MIN_DROP and link not in history:
-                            msg = f"🌍 <b>ARBWORLD: {best_drop:.1f}%</b>\n\n⚽ <b>{name}</b>\n📉 {old_k} ➔ {new_k}\n🔗 <a href='https://www.arbworld.net{link}'>Link</a>"
-                            send_telegram(msg)
-                            new_history.append(link)
-                            time.sleep(2)
-                    except: continue
-    except Exception as e: print(e)
-    save_history(new_history)
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", 
+                      json={'chat_id': TG_CHANNEL, 'text': text, 'parse_mode': 'HTML'})
+    except Exception as e:
+        print(f"Ошибка ТГ: {e}")
 
-if __name__ == "__main__": run()
+def run_selenium():
+    print("🚀 Запуск Chrome (Selenium)...")
+    
+    # Настройка браузера для GitHub Actions
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # Без графики
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled") # Скрываем, что мы робот
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
+    try:
+        # Установка драйвера
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        print(f"🌍 Перехожу на {URL}...")
+        driver.get(URL)
+        
+        # Ждем 10 секунд, чтобы сайт прогрузился и прошла проверка Cloudflare
+        time.sleep(10)
+        
+        # Получаем заголовок страницы для проверки
+        title = driver.title
+        print(f"Заголовок сайта: {title}")
+        
+        # Ищем таблицу
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.items tr")
+        print(f"📊 Найдено строк: {len(rows)}")
+        
+        if "Just a moment" in title or len(rows) == 0:
+            print("⛔ Попали на капчу Cloudflare или сайт не прогрузился.")
+            # Делаем скриншот для отладки (в логах его не увидеть, но сам факт полезен)
+            send_telegram(f"⚠️ Arbworld блокирует доступ (Title: {title}). Попробуй перезапуск.")
+        else:
+            # Если строки найдены - пробуем взять первый матч
+            try:
+                first_row = rows[1].text
+                send_telegram(f"✅ УСПЕХ! Selenium пробил защиту.\nПервая строка данных:\n{first_row[:100]}...")
+            except:
+                send_telegram("✅ Сайт открылся, но таблица странная.")
+
+        driver.quit()
+
+    except Exception as e:
+        print(f"❌ Ошибка Selenium: {e}")
+        send_telegram(f"❌ Ошибка бота: {e}")
+
+if __name__ == "__main__":
+    run_selenium()
