@@ -11,105 +11,66 @@ from selenium.webdriver.common.by import By
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
 
-# Список видов спорта для сканирования
+# Ссылки на популярные ставки (где много денег)
 SPORTS = {
-    'soccer': '⚽ Футбол',
-    'basketball': '🏀 Баскетбол',
-    'tennis': '🎾 Теннис',
-    'hockey': '🏒 Хоккей',
-    'handball': '🤾 Гандбол',
-    'volleyball': '🏐 Волейбол',
-    'baseball': '⚾ Бейсбол'
+    '⚽ Футбол': "https://www.betexplorer.com/popular-bets/soccer/",
+    '🏀 Баскетбол': "https://www.betexplorer.com/popular-bets/basketball/",
+    '🎾 Теннис': "https://www.betexplorer.com/popular-bets/tennis/",
+    '🏒 Хоккей': "https://www.betexplorer.com/popular-bets/hockey/"
 }
-
-BASE_URL = "https://www.betexplorer.com/popular-bets/"
 
 def send_telegram(text):
     print(f"📤 TG: {text}")
-    if not TG_TOKEN or not TG_CHANNEL: return
+    if not TG_TOKEN or not TG_CHANNEL:
+        print("❌ НЕТ ТОКЕНА")
+        return
     try:
         requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", 
                       json={'chat_id': TG_CHANNEL, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True})
     except Exception as e: print(f"Err TG: {e}")
 
-def get_selection_name(match_name, pick):
-    """Определяет название команды по исходу (1, X, 2)"""
-    try:
-        # Обычно название: "Team A - Team B"
-        teams = match_name.split(' - ')
-        
-        if len(teams) < 2:
-            # Если разделитель другой или теннис (имя фамилия)
-            if pick == '1': return "Победа 1 (Дома/Фаворит)"
-            if pick == '2': return "Победа 2 (Гости)"
-            if pick == 'X': return "Ничья"
-            return pick
+def run_debug_scanner():
+    # 1. ПРОВЕРКА СВЯЗИ
+    send_telegram("🚀 <b>Запуск сканера...</b>\nПроверяю все виды спорта.")
 
-        home_team = teams[0].strip()
-        away_team = teams[1].strip()
-
-        if pick == '1':
-            return f"Победа 1: <b>{home_team}</b>"
-        elif pick == '2':
-            return f"Победа 2: <b>{away_team}</b>"
-        elif pick == 'X':
-            return "Результат: <b>Ничья</b>"
-        else:
-            return f"Исход: {pick}"
-    except:
-        return f"Исход: {pick}"
-
-def run_multisport_scanner():
-    print("🚀 Запуск Multi-Sport сканера...")
-    
-    # --- НАСТРОЙКИ STEALTH (Те же, что сработали) ---
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option('useAutomationExtension', False)
 
+    driver = None
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        total_found = 0
 
-        # --- ЦИКЛ ПО ВСЕМ ВИДАМ СПОРТА ---
-        for sport_key, sport_name in SPORTS.items():
-            url = f"{BASE_URL}{sport_key}/"
-            print(f"🌍 Сканирую {sport_name} ({url})...")
-            
+        for sport_name, url in SPORTS.items():
+            print(f"🌍 Иду в {sport_name}...")
             try:
                 driver.get(url)
-                time.sleep(5) # Пауза между переходами
+                time.sleep(5) # Ждем загрузку
                 
+                # Ищем таблицу
                 rows = driver.find_elements(By.CSS_SELECTOR, "table.table-main tr")
+                print(f"{sport_name}: Найдено строк {len(rows)}")
                 
                 if len(rows) < 2:
-                    print(f"⚠️ {sport_name}: Таблица пустая или нет популярных ставок.")
                     continue
 
-                count = 0
-                # Пропускаем шапку таблицы [0]
+                sport_count = 0
+                # Проходим по строкам (пропуская заголовок)
                 for row in rows[1:]:
                     try:
                         cols = row.find_elements(By.TAG_NAME, "td")
-                        if len(cols) < 4: continue
+                        # Обычно 4 или 5 колонок
+                        if len(cols) < 3: continue
                         
-                        # Парсим данные
-                        match_name = cols[0].text.strip() # Названия команд
-                        pick = cols[1].text.strip()       # 1, X или 2
-                        odd = cols[2].text.strip()        # Коэффициент
-                        
-                        # Убираем время из названия матча (если оно там приклеилось)
-                        # Обычно BetExplorer пишет время в span, selenium берет всё текстом
-                        # Просто берем, как есть, обычно читаемо
-                        
-                        selection_text = get_selection_name(match_name, pick)
+                        match_text = cols[0].text.strip() # Название
+                        pick = cols[1].text.strip()       # Исход
+                        odd = cols[2].text.strip()        # Кэф
                         
                         # Ссылка
                         try:
@@ -117,36 +78,40 @@ def run_multisport_scanner():
                         except:
                             link = url
 
+                        # Формируем сообщение
                         msg = (
-                            f"🔥 <b>TOP {sport_name.upper()}</b>\n\n"
-                            f"⚔️ {match_name}\n"
-                            f"🎯 {selection_text}\n"
-                            f"💰 Кэф: <b>{odd}</b>\n"
-                            f"📊 <i>Высокий объем ставок</i>\n"
-                            f"🔗 <a href='{link}'>Открыть матч</a>"
+                            f"🔥 <b>POPULAR {sport_name}</b>\n"
+                            f"🏟 <b>{match_text}</b>\n"
+                            f"👉 Ставка на: <b>{pick}</b>\n"
+                            f"💰 Кэф: {odd}\n"
+                            f"🔗 <a href='{link}'>Открыть</a>"
                         )
                         
                         send_telegram(msg)
-                        count += 1
+                        sport_count += 1
+                        total_found += 1
                         
-                        # Берем только ТОП-3 самых популярных матча на каждый спорт
-                        if count >= 3:
+                        # Лимит 2 матча на спорт (для теста)
+                        if sport_count >= 2:
                             break
-                            
-                    except Exception as inner_e:
+                    except:
                         continue
-                
-                print(f"✅ {sport_name}: отправлено {count} матчей.")
-                
+                        
             except Exception as e:
-                print(f"Ошибка при сканировании {sport_name}: {e}")
+                print(f"Ошибка в {sport_name}: {e}")
                 continue
 
-        driver.quit()
+        if total_found == 0:
+            send_telegram("⚠️ Сканер прошел все ссылки, но популярных матчей сейчас нет (таблицы пустые).")
+        else:
+            send_telegram(f"🏁 <b>Сканирование завершено.</b> Найдено матчей: {total_found}")
 
     except Exception as e:
-        print(f"❌ Критическая ошибка драйвера: {e}")
-        send_telegram(f"❌ Ошибка бота: {e}")
+        send_telegram(f"❌ <b>Критическая ошибка бота:</b>\n{str(e)}")
+    
+    finally:
+        if driver:
+            driver.quit()
 
 if __name__ == "__main__":
-    run_multisport_scanner()
+    run_debug_scanner()
