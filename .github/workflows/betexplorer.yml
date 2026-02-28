@@ -1,16 +1,16 @@
-name: Real Drop Scanner
+name: Drop & Result Scanner
 
 on:
   schedule:
-    # Запуск каждые 30 минут (в 00 и 30 минут каждого часа)
-    - cron: '0,20 * * * *'
-  workflow_dispatch: # Кнопка ручного запуска
+    - cron: '*/20 * * * *' # Каждые 20 минут
+  workflow_dispatch:
 
 jobs:
   run_bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Разрешение на запись истории
+      contents: write # РАЗРЕШЕНИЕ НА ЗАПИСЬ
+      
     steps:
       - uses: actions/checkout@v3
 
@@ -28,10 +28,11 @@ jobs:
           TG_CHANNEL: ${{ secrets.TG_CHANNEL }}
         run: python main.py
 
-      - name: Save History
+      - name: Save Database
         run: |
-          git config user.name "DropBot"
-          git config user.email "bot@drop.com"
-          git add history.json
-          git commit -m "Update match history" || echo "No changes"
+          git config user.name "ResultBot"
+          git config user.email "bot@result.com"
+          git add bets.json
+          # Сохраняем, только если есть изменения
+          git commit -m "Update bets db" || echo "No changes"
           git push
