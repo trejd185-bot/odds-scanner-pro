@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import requests
 import re
@@ -14,19 +15,31 @@ from selenium.webdriver.support import expected_conditions as EC
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
 
-SPORTS = {
-    '⚽ ФУТБОЛ': "https://www.betexplorer.com/popular-bets/soccer/",
-    '🏀 БАСКЕТБОЛ': "https://www.betexplorer.com/popular-bets/basketball/",
-    '🏒 ХОККЕЙ': "https://www.betexplorer.com/popular-bets/hockey/",
-    '🎾 ТЕННИС': "https://www.betexplorer.com/popular-bets/tennis/"
-}
+# Ссылка на падающие коэффициенты (фильтр: за последние 24 часа)
+URL = "https://www.betexplorer.com/dropping-odds/"
 
-ICONS = {
-    '⚽ ФУТБОЛ': '⚽',
-    '🏀 БАСКЕТБОЛ': '🏀',
-    '🏒 ХОККЕЙ': '🏒',
-    '🎾 ТЕННИС': '🎾'
-}
+# Минимальный процент падения (15 = 15%)
+MIN_DROP = 15.0
+
+# Файл истории (чтобы не спамить одним и тем же)
+HISTORY_FILE = "history.json"
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_history(data):
+    try:
+        # Храним только последние 300 матчей
+        with open(HISTORY_FILE, 'w') as f:
+            json.dump(data[-300:], f)
+    except:
+        pass
 
 def send_telegram(text):
     print(f"📤 TG: {text}")
@@ -36,21 +49,19 @@ def send_telegram(text):
                       json={'chat_id': TG_CHANNEL, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True})
     except Exception as e: print(f"Err TG: {e}")
 
-def is_float(text):
-    """Проверяет, является ли текст числом (кэфом), например '1.11'"""
-    try:
-        return "." in text and float(text) > 0
-    except:
-        return False
+def get_sport_icon(link):
+    if "soccer" in link: return "⚽"
+    if "basketball" in link: return "🏀"
+    if "tennis" in link: return "🎾"
+    if "hockey" in link: return "🏒"
+    if "volleyball" in link: return "🏐"
+    if "handball" in link: return "🤾"
+    return "🚨"
 
-def get_teams(match_name):
-    """Разделяет строку 'Team A - Team B' на две команды"""
-    parts = match_name.split(' - ')
-    if len(parts) >= 2:
-        return parts[0].strip(), parts[1].strip()
-    return match_name, "Противник"
+def run_drop_scanner():
+    print(f"🚀 Запуск поиска прогрузов > {MIN_DROP}%...")
 
-def run_smart_scanner():
+    # Настройки "Невидимки"
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -64,111 +75,102 @@ def run_smart_scanner():
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-        total_matches = 0
+        # Загружаем историю
+        history = load_history()
+        new_history = history.copy()
+        found_count = 0
 
-        for sport_name, url in SPORTS.items():
-            print(f"🌍 {sport_name}...")
+        print(f"🌍 Иду на {URL}...")
+        driver.get(URL)
+        
+        # Ждем таблицу
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-main tr"))
+            )
+        except:
+            print("⚠️ Таблица не прогрузилась.")
+            driver.quit()
+            return
+
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.table-main tr")
+        print(f"📊 Найдено строк: {len(rows)}")
+
+        for row in rows:
             try:
-                driver.get(url)
+                # Ищем процент падения (класс .table-main__drop)
                 try:
-                    WebDriverWait(driver, 8).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-main tr"))
-                    )
+                    drop_element = row.find_element(By.CLASS_NAME, "table-main__drop")
+                    drop_text = drop_element.text.strip().replace('%', '')
+                    drop_val = float(drop_text)
                 except:
+                    continue # Если в строке нет процента, пропускаем
+
+                # Мы берем модуль числа (так как падение пишут с минусом, например -20.5)
+                drop_val = abs(drop_val)
+
+                # Фильтр: Ищем только падение больше MIN_DROP (15%)
+                if drop_val < MIN_DROP:
                     continue
 
-                rows = driver.find_elements(By.CSS_SELECTOR, "table.table-main tr")
-                if len(rows) < 2: continue
-
-                count = 0
+                # Извлекаем данные матча
+                cols = row.find_elements(By.TAG_NAME, "td")
                 
-                # Проходим по строкам
-                for row in rows[1:]:
-                    try:
-                        cols = row.find_elements(By.TAG_NAME, "td")
-                        if len(cols) < 4: continue
-                        
-                        # 1. Ссылка и Имя матча
-                        link_el = cols[0].find_element(By.TAG_NAME, "a")
-                        match_name = link_el.text.strip()
-                        link = link_el.get_attribute("href")
-                        
-                        col1_text = cols[1].text.strip() # Либо Исход ("1"), либо Кэф ("1.11")
-                        col2_text = cols[2].text.strip() # Либо Кэф ("1.5"), либо Кэф противника
-                        
-                        # --- ЛОГИКА ОПРЕДЕЛЕНИЯ ТАБЛИЦЫ ---
-                        
-                        final_pick = ""
-                        final_odd = ""
-                        team1, team2 = get_teams(match_name)
-                        
-                        # СЦЕНАРИЙ А: Таблица "Сломалась" (как на скрине) -> Там кэфы (1.11, 6.85)
-                        if is_float(col1_text):
-                            odd_home = float(col1_text)
-                            try:
-                                odd_away = float(col2_text)
-                            except:
-                                odd_away = 100.0 # Если второй кэф пустой
-                            
-                            # В популярных ставках обычно грузят на фаворита (меньший кэф)
-                            if odd_home < odd_away:
-                                final_pick = f"Победа 1 <b>({team1})</b>"
-                                final_odd = str(odd_home)
-                            else:
-                                final_pick = f"Победа 2 <b>({team2})</b>"
-                                final_odd = str(odd_away)
-                        
-                        # СЦЕНАРИЙ Б: Таблица Нормальная -> Там исход ("1", "X", "2")
-                        else:
-                            pick = col1_text.upper()
-                            final_odd = col2_text
-                            
-                            if pick == '1':
-                                final_pick = f"Победа 1 <b>({team1})</b>"
-                            elif pick == '2':
-                                final_pick = f"Победа 2 <b>({team2})</b>"
-                            elif pick == 'X':
-                                final_pick = "Ничья <b>(X)</b>"
-                            else:
-                                final_pick = f"Исход: {pick}"
+                # Ссылка и Название
+                link_el = cols[0].find_element(By.TAG_NAME, "a")
+                match_name = link_el.text.strip()
+                link = link_el.get_attribute("href")
+                
+                # Проверка истории (чтобы не слать повторно)
+                if link in history:
+                    continue
 
-                        # Отправка
-                        icon = ICONS.get(sport_name, '🔥')
-                        
-                        msg = (
-                            f"🔥 <b>ТОП ПРОГРУЗ | {sport_name}</b>\n\n"
-                            f"{icon} <b>{match_name}</b>\n"
-                            f"✅ Выбор: {final_pick}\n"
-                            f"📉 Кэф: <b>{final_odd}</b>\n\n"
-                            f"🔗 <a href='{link}'>Открыть матч</a>"
-                        )
-                        
-                        send_telegram(msg)
-                        
-                        count += 1
-                        total_matches += 1
-                        
-                        if count >= 3: # Топ-3 матча на спорт
-                            break
-                            
-                    except Exception as e:
-                        continue
+                # Текущий кэф (обычно последняя колонка с классом odds)
+                # Или просто берем текст из ячейки кэфа
+                try:
+                    odds_el = row.find_element(By.CLASS_NAME, "table-main__odds")
+                    current_odd = odds_el.text.strip()
+                except:
+                    current_odd = "N/A"
+
+                # На кого грузят? (Обычно выделено жирным или цветом, но упростим)
+                # Определяем вид спорта по ссылке
+                icon = get_sport_icon(link)
+
+                msg = (
+                    f"📉 <b>СИЛЬНОЕ ПАДЕНИЕ | {drop_val}%</b>\n\n"
+                    f"{icon} <b>{match_name}</b>\n"
+                    f"🔻 Прогруз: <b>{drop_val}%</b>\n"
+                    f"💰 Текущий Кэф: <b>{current_odd}</b>\n\n"
+                    f"🔗 <a href='{link}'>Открыть матч</a>"
+                )
+                
+                send_telegram(msg)
+                
+                new_history.append(link)
+                found_count += 1
+                
+                # Пауза 1 сек, чтобы телеграм не блочил
+                time.sleep(1)
 
             except Exception as e:
-                print(f"Ошибка {sport_name}: {e}")
                 continue
-        
-        if total_matches == 0:
-            send_telegram("💤 Популярных матчей сейчас нет.")
+
+        # Сохраняем обновленную историю
+        if found_count > 0:
+            print(f"✅ Найдено новых прогрузов: {found_count}")
+            # Сохраняем файл истории в систему
+            save_history(new_history)
         else:
-            send_telegram(f"🏁 <b>Сканирование завершено.</b> Найдено: {total_matches}")
+            print("💤 Новых прогрузов >15% пока нет.")
 
     except Exception as e:
-        send_telegram(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка: {e}")
+        send_telegram(f"❌ Ошибка бота: {e}")
     
     finally:
         if 'driver' in locals():
             driver.quit()
 
 if __name__ == "__main__":
-    run_smart_scanner()
+    run_drop_scanner()
