@@ -12,24 +12,11 @@ from selenium.webdriver.common.by import By
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
 
-# Источник: BetWatch
-URL = "https://www.betwatch.fr/en/moneyway-1x2-football"
+# Новый источник: Oddstake (Раздел Moneyway)
+URL = "https://www.oddstake.com/moneyway.html"
 
-# Минимальная сумма (объем рынка) в евро
-MIN_MONEY = 1000  # Поставь пока 1000 для теста, потом подними до 20000
-
-# Файл истории (чтобы не спамить одним и тем же)
-HISTORY_FILE = "history_money.txt"
-
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            return f.read().splitlines()
-    return []
-
-def save_history(match_name):
-    with open(HISTORY_FILE, "a") as f:
-        f.write(f"{match_name}\n")
+# Минимальная сумма (объем) в евро
+MIN_MONEY = 1000  # Для теста - 1000. Потом поставь 10000 или выше.
 
 def send_telegram(text):
     print(f"📤 TG: {text}")
@@ -40,29 +27,30 @@ def send_telegram(text):
     except Exception as e: print(f"Err TG: {e}")
 
 def parse_money(text):
-    """Ищет числа перед знаком €"""
-    # Находит все варианты: 10 000€, 10000 €, 5.5K €
+    """Превращает '10.5K €' или '10,500' в число"""
     try:
-        # Удаляем всё кроме цифр и значка евро
-        clean_text = text.replace(" ", "")
-        if "€" in clean_text:
-            # Вытаскиваем число перед евро
-            matches = re.findall(r'(\d+)€', clean_text)
-            if matches:
-                # Берем самое большое число в строке (там может быть несколько)
-                return max([int(m) for m in matches])
+        # Убираем всё лишнее
+        clean = text.upper().replace("€", "").replace("EUR", "").strip()
+        
+        # Если есть K (тысячи), например 10K
+        if "K" in clean:
+            clean = clean.replace("K", "")
+            return int(float(clean) * 1000)
+            
+        # Если просто число с запятой или точкой
+        clean = re.sub(r'[^\d]', '', clean)
+        return int(clean)
     except:
-        pass
-    return 0
+        return 0
 
-def run_scanner():
-    print("🚀 Запуск 'Всеядного' сканера...")
+def run_oddstake():
+    print("🚀 Запуск сканера Oddstake...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
+    # Маскируемся под обычный ПК
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
 
     try:
@@ -71,72 +59,79 @@ def run_scanner():
         
         print(f"🌍 Иду на {URL}...")
         driver.get(URL)
+        time.sleep(10) # Ждем прогрузки
         
-        # Ждем 20 секунд (на всякий случай, если интернет медленный)
-        time.sleep(20)
-        
-        # Берем ВСЕ строки на сайте (тег <tr>), не глядя на классы
-        rows = driver.find_elements(By.TAG_NAME, "tr")
-        print(f"📊 Всего строк (TR) на сайте: {len(rows)}")
+        # Проверяем заголовок, чтобы убедиться, что сайт открылся
+        print(f"Заголовок: {driver.title}")
+
+        # Ищем таблицу (на Oddstake она обычно имеет id="moneyway_table" или просто большая таблица)
+        rows = driver.find_elements(By.CSS_SELECTOR, "tr")
+        print(f"📊 Найдено строк: {len(rows)}")
         
         if len(rows) < 5:
-            # Если строк мало, значит сайт не прогрузил таблицу
-            body_text = driver.find_element(By.TAG_NAME, "body").text[:200]
-            send_telegram(f"⚠️ Таблица пустая. Текст на сайте:\n{body_text}")
+            send_telegram("⚠️ Oddstake открылся, но таблица пустая.")
             driver.quit()
             return
 
-        history = load_history()
         matches_found = 0
 
         for row in rows:
-            text = row.text
-            
-            # Если в строке нет значка евро, пропускаем
-            if "€" not in text:
+            try:
+                text = row.text
+                # Ищем значок €
+                if "€" not in text: continue
+                
+                # Разбиваем строку на части
+                # Пример строки: "20:00 Real Madrid vs Barcelona 100K € ..."
+                
+                # Ищем все денежные суммы в строке
+                # Регулярка ищет числа, за которыми (сразу или через пробел) стоит €
+                money_list = re.findall(r'(\d+[K\d\.,]*)\s?€', text)
+                
+                if not money_list: continue
+                
+                # Превращаем в числа и берем максимум
+                amounts = [parse_money(m) for m in money_list]
+                max_amount = max(amounts)
+                
+                if max_amount >= MIN_MONEY:
+                    # Пытаемся вытащить название матча
+                    # Обычно это текст в начале строки
+                    parts = text.split("€")[0] # Берем всё до первого значка евро
+                    match_name = parts[-50:] # Берем последние 50 символов перед деньгами (там название)
+                    
+                    # Чистим название от мусора
+                    match_name = re.sub(r'\d{2}:\d{2}', '', match_name).strip() # Убираем время
+                    
+                    # Форматируем сумму
+                    pretty_sum = "{:,}".format(max_amount).replace(",", " ")
+                    
+                    msg = (
+                        f"💶 <b>ODDSTAKE MONEY: {pretty_sum} €</b>\n\n"
+                        f"⚽ <b>{match_name}</b>\n"
+                        f"🔗 <a href='{URL}'>Открыть сайт</a>"
+                    )
+                    
+                    print(f"Нашел: {match_name} - {pretty_sum}")
+                    send_telegram(msg)
+                    matches_found += 1
+                    
+                    if matches_found >= 3:
+                        break # Не спамим больше 3 за раз
+                        
+            except Exception as e:
                 continue
 
-            # Пытаемся найти сумму
-            money = parse_money(text)
-            
-            if money >= MIN_MONEY:
-                # Пытаемся найти название матча (обычно там есть время типа 20:00 или : )
-                # Или просто берем первые слова строки
-                lines = text.split('\n')
-                match_name = lines[0] if len(lines) > 0 else "Unknown Match"
-                
-                # Проверка на дубликат
-                if match_name in history:
-                    continue
-                
-                # Форматируем сумму
-                pretty_sum = "{:,}".format(money).replace(",", " ")
-                
-                msg = (
-                    f"💶 <b>MONEY DETECTED: {pretty_sum} €</b>\n\n"
-                    f"⚽ <b>{match_name}</b>\n"
-                    f"🔗 <a href='{URL}'>Смотреть BetWatch</a>"
-                )
-                
-                send_telegram(msg)
-                save_history(match_name)
-                matches_found += 1
-                
-                # Лимит 3 сообщения за раз
-                if matches_found >= 3:
-                    print("Лимит сообщений.")
-                    break
-
         if matches_found == 0:
-            print("Матчи с деньгами не найдены (или уже были отправлены).")
-            # Можно раскомментировать для теста:
-            # send_telegram(f"🔍 Сканер жив. Проверил {len(rows)} строк. Новых денег >{MIN_MONEY}€ нет.")
+            print("Матчи не найдены.")
+            # Раскомментируй строку ниже, если хочешь видеть отчет каждый раз
+            # send_telegram(f"✅ Oddstake проверен. Строк: {len(rows)}. Крупных денег нет.")
 
         driver.quit()
 
     except Exception as e:
         print(f"❌ Критическая ошибка: {e}")
-        send_telegram(f"❌ Ошибка скрипта: {e}")
+        send_telegram(f"❌ Ошибка Oddstake: {e}")
 
 if __name__ == "__main__":
-    run_scanner()
+    run_oddstake()
