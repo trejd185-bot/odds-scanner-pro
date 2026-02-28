@@ -1,0 +1,34 @@
+name: Moneyway Scanner
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # Каждые 10 минут
+  workflow_dispatch: # Кнопка ручного запуска
+
+jobs:
+  run_bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: pip install cloudscraper beautifulsoup4 lxml requests
+
+      - name: Run Script
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHANNEL: ${{ secrets.TG_CHANNEL }} # Убедись, что тут ID канала (-100...)
+        run: python main.py
+      
+      - name: Save History
+        run: |
+          git config user.name "MoneyBot"
+          git config user.email "bot@money.com"
+          git add money_history.json
+          git commit -m "Update money history" || echo "No changes"
+          git push
