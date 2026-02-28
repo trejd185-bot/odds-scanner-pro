@@ -14,7 +14,7 @@ URL = "https://www.arbworld.net/en/moneyway"
 HISTORY_FILE = "money_history.json"
 
 # Минимальная сумма в ЕВРО, чтобы пришло уведомление
-MIN_MONEY = 20000  # Например, 20 000 евро
+MIN_MONEY = 100  # Например, 20 000 евро
 
 def send_telegram(text):
     if not TG_TOKEN or not TG_CHANNEL:
