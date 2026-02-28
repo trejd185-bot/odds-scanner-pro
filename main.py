@@ -30,7 +30,7 @@ ICONS = {
     'ХОККЕЙ': '🏒'
 }
 
-# Сколько минут работать перед перезагрузкой (GitHub лимит)
+# Сколько минут работать перед перезагрузкой
 WORK_DURATION_MINUTES = 10 
 
 # --- БАЗА ДАННЫХ ---
@@ -88,7 +88,6 @@ def scan_popular(driver, bets):
     for sport_name, url in SPORTS.items():
         try:
             driver.get(url)
-            # Ждем таблицу (быстро)
             try:
                 WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-main tr")))
             except: continue
@@ -100,18 +99,24 @@ def scan_popular(driver, bets):
             for row in rows[1:]:
                 try:
                     cols = row.find_elements(By.TAG_NAME, "td")
+                    # Нам нужно минимум 4 колонки: Матч, Исход, Кэф, Дата
                     if len(cols) < 4: continue
                     
+                    # 1. Ссылка и Название
                     link_el = cols[0].find_element(By.TAG_NAME, "a")
                     match_name = link_el.text.strip()
                     link = link_el.get_attribute("href")
                     
                     if link in existing_urls: continue
                     
+                    # 2. Данные ставки
                     pick_raw = cols[1].text.strip()
                     odd = cols[2].text.strip()
                     
-                    # Проверка на "битую" верстку (когда кэф попадает в исход)
+                    # 3. Время матча (4-я колонка)
+                    match_time = cols[3].text.strip() 
+                    
+                    # Проверка на "битую" верстку
                     if "." in pick_raw: continue 
                     
                     pretty_pick = format_pick(match_name, pick_raw)
@@ -120,6 +125,7 @@ def scan_popular(driver, bets):
                     msg = (
                         f"🔥 <b>ТОП ПРОГРУЗ | {sport_name}</b>\n\n"
                         f"{icon} <b>{match_name}</b>\n"
+                        f"🕒 Начало: <b>{match_time}</b>\n"
                         f"🎯 {pretty_pick}\n"
                         f"💰 Кэф: <b>{odd}</b>\n"
                         f"🔗 <a href='{link}'>Открыть матч</a>"
@@ -139,7 +145,7 @@ def scan_popular(driver, bets):
                         time.sleep(1)
                         
                     count += 1
-                    if count >= 2: break # Топ-2 матча на спорт за раз
+                    if count >= 2: break 
                 except: continue
         except: continue
         
@@ -188,7 +194,7 @@ def check_results(driver, bets):
 
 # --- ЗАПУСК ЦИКЛА ---
 def run_eternal_loop():
-    print("🚀 Бот запущен в режиме ВЕЧНОГО ЦИКЛА")
+    print("🚀 Бот запущен (с отображением Времени)")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -202,35 +208,28 @@ def run_eternal_loop():
     driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
-    # Загружаем базу один раз
     bets = load_bets()
     start_time = time.time()
     
     try:
         while True:
-            # 1. Проверяем таймер
             elapsed_min = (time.time() - start_time) / 60
             if elapsed_min >= WORK_DURATION_MINUTES:
-                print("⏰ Время вышло. Перезагрузка...")
+                print("⏰ Перезагрузка...")
                 break
             
-            # 2. Выполняем работу
             has_updates = False
-            
             if check_results(driver, bets): has_updates = True
             if scan_popular(driver, bets): has_updates = True
             
-            # 3. Сохраняем, если были изменения
             if has_updates:
                 save_bets(bets)
             
-            # 4. Спим 3 минуты перед следующей проверкой
             print("💤 Сплю 3 минуты...")
             time.sleep(180)
             
     except Exception as e:
         print(f"Loop Error: {e}")
-        # При аварии тоже сохраняем базу
         save_bets(bets)
         
     finally:
