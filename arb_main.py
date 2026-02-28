@@ -1,7 +1,6 @@
 import os
 import time
 import requests
-import re
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -12,11 +11,8 @@ from selenium.webdriver.common.by import By
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
 
-# Новый источник: Oddstake (Раздел Moneyway)
-URL = "https://www.oddstake.com/moneyway.html"
-
-# Минимальная сумма (объем) в евро
-MIN_MONEY = 1000  # Для теста - 1000. Потом поставь 10000 или выше.
+# Источник: BetExplorer Popular Bets (Самые прогруженные матчи мира)
+URL = "https://www.betexplorer.com/popular-bets/soccer/"
 
 def send_telegram(text):
     print(f"📤 TG: {text}")
@@ -26,112 +22,87 @@ def send_telegram(text):
                       json={'chat_id': TG_CHANNEL, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True})
     except Exception as e: print(f"Err TG: {e}")
 
-def parse_money(text):
-    """Превращает '10.5K €' или '10,500' в число"""
-    try:
-        # Убираем всё лишнее
-        clean = text.upper().replace("€", "").replace("EUR", "").strip()
-        
-        # Если есть K (тысячи), например 10K
-        if "K" in clean:
-            clean = clean.replace("K", "")
-            return int(float(clean) * 1000)
-            
-        # Если просто число с запятой или точкой
-        clean = re.sub(r'[^\d]', '', clean)
-        return int(clean)
-    except:
-        return 0
-
-def run_oddstake():
-    print("🚀 Запуск сканера Oddstake...")
+def run_stealth_scanner():
+    print("🚀 Запуск STEALTH режима...")
     
+    # --- НАСТРОЙКИ НЕВИДИМКИ ---
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # Маскируемся под обычный ПК
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
+    chrome_options.add_argument("--window-size=1920,1080")
+    
+    # 1. Подделываем User-Agent под обычный Windows
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    
+    # 2. ОТКЛЮЧАЕМ флаги автоматизации (самое важное!)
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
 
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
+        # Дополнительная маскировка через JS
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         print(f"🌍 Иду на {URL}...")
         driver.get(URL)
         time.sleep(10) # Ждем прогрузки
         
-        # Проверяем заголовок, чтобы убедиться, что сайт открылся
-        print(f"Заголовок: {driver.title}")
-
-        # Ищем таблицу (на Oddstake она обычно имеет id="moneyway_table" или просто большая таблица)
-        rows = driver.find_elements(By.CSS_SELECTOR, "tr")
+        # Ищем таблицу популярных ставок
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.table-main tr")
         print(f"📊 Найдено строк: {len(rows)}")
         
-        if len(rows) < 5:
-            send_telegram("⚠️ Oddstake открылся, но таблица пустая.")
+        if len(rows) < 3:
+            send_telegram("⚠️ BetExplorer открылся, но таблица пустая. Защита сработала.")
             driver.quit()
             return
 
         matches_found = 0
 
-        for row in rows:
+        # Пропускаем заголовок таблицы [0]
+        for row in rows[1:]:
             try:
-                text = row.text
-                # Ищем значок €
-                if "€" not in text: continue
+                # Извлекаем данные
+                # Структура: Матч | Ставка | Кэф | Дата
+                cols = row.find_elements(By.TAG_NAME, "td")
+                if len(cols) < 4: continue
                 
-                # Разбиваем строку на части
-                # Пример строки: "20:00 Real Madrid vs Barcelona 100K € ..."
+                match_name = cols[0].text.strip()
+                pick = cols[1].text.strip() # На кого грузят (1, X, 2)
+                odd = cols[2].text.strip()  # Кэф
                 
-                # Ищем все денежные суммы в строке
-                # Регулярка ищет числа, за которыми (сразу или через пробел) стоит €
-                money_list = re.findall(r'(\d+[K\d\.,]*)\s?€', text)
+                # Ссылка на матч
+                link_el = cols[0].find_element(By.TAG_NAME, "a")
+                link = link_el.get_attribute("href")
                 
-                if not money_list: continue
+                msg = (
+                    f"🔥 <b>POPULAR BET (High Volume)</b>\n\n"
+                    f"⚽ <b>{match_name}</b>\n"
+                    f"🎯 Грузят на: <b>{pick}</b>\n"
+                    f"💰 Кэф: {odd}\n"
+                    f"🔗 <a href='{link}'>Открыть матч</a>"
+                )
                 
-                # Превращаем в числа и берем максимум
-                amounts = [parse_money(m) for m in money_list]
-                max_amount = max(amounts)
+                send_telegram(msg)
+                matches_found += 1
                 
-                if max_amount >= MIN_MONEY:
-                    # Пытаемся вытащить название матча
-                    # Обычно это текст в начале строки
-                    parts = text.split("€")[0] # Берем всё до первого значка евро
-                    match_name = parts[-50:] # Берем последние 50 символов перед деньгами (там название)
+                if matches_found >= 5: # Шлем топ-5 самых популярных
+                    break
                     
-                    # Чистим название от мусора
-                    match_name = re.sub(r'\d{2}:\d{2}', '', match_name).strip() # Убираем время
-                    
-                    # Форматируем сумму
-                    pretty_sum = "{:,}".format(max_amount).replace(",", " ")
-                    
-                    msg = (
-                        f"💶 <b>ODDSTAKE MONEY: {pretty_sum} €</b>\n\n"
-                        f"⚽ <b>{match_name}</b>\n"
-                        f"🔗 <a href='{URL}'>Открыть сайт</a>"
-                    )
-                    
-                    print(f"Нашел: {match_name} - {pretty_sum}")
-                    send_telegram(msg)
-                    matches_found += 1
-                    
-                    if matches_found >= 3:
-                        break # Не спамим больше 3 за раз
-                        
             except Exception as e:
                 continue
-
+        
         if matches_found == 0:
-            print("Матчи не найдены.")
-            # Раскомментируй строку ниже, если хочешь видеть отчет каждый раз
-            # send_telegram(f"✅ Oddstake проверен. Строк: {len(rows)}. Крупных денег нет.")
+            send_telegram("✅ Сайт открылся, но популярных матчей на сегодня нет.")
 
         driver.quit()
 
     except Exception as e:
-        print(f"❌ Критическая ошибка: {e}")
-        send_telegram(f"❌ Ошибка Oddstake: {e}")
+        print(f"❌ Ошибка: {e}")
+        send_telegram(f"❌ Ошибка бота: {e}")
 
 if __name__ == "__main__":
-    run_oddstake()
+    run_stealth_scanner()
