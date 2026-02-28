@@ -1,8 +1,8 @@
-name: Drop & Result Scanner
+name: Always On - MultiSport
 
 on:
   schedule:
-    - cron: '*/20 * * * *' # Каждые 20 минут
+    - cron: '*/15 * * * *' # Запуск каждые 15 минут
   workflow_dispatch:
 
 jobs:
@@ -26,6 +26,8 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHANNEL: ${{ secrets.TG_CHANNEL }}
+        # Таймаут чуть больше, чем время работы скрипта, чтобы GitHub не убил его раньше времени
+        timeout-minutes: 14
         run: python main.py
 
       - name: Save Database
@@ -33,6 +35,5 @@ jobs:
           git config user.name "ResultBot"
           git config user.email "bot@result.com"
           git add bets.json
-          # Сохраняем, только если есть изменения
           git commit -m "Update bets db" || echo "No changes"
           git push
