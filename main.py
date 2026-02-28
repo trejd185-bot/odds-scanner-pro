@@ -2,6 +2,7 @@ import os
 import json
 import time
 import requests
+from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -15,7 +16,7 @@ TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHANNEL = os.environ.get("TG_CHANNEL")
 BETS_FILE = "bets.json"
 
-# Ссылки на популярные ставки
+# Ссылки
 SPORTS = {
     'ФУТБОЛ': "https://www.betexplorer.com/popular-bets/soccer/",
     'ТЕННИС': "https://www.betexplorer.com/popular-bets/tennis/",
@@ -30,7 +31,7 @@ ICONS = {
     'ХОККЕЙ': '🏒'
 }
 
-# Сколько минут работать перед перезагрузкой
+# Работаем 10 минут, потом рестарт (чтобы GitHub не убил процесс)
 WORK_DURATION_MINUTES = 10 
 
 # --- БАЗА ДАННЫХ ---
@@ -65,15 +66,38 @@ def send_telegram(text, reply_to=None):
     except Exception as e: print(f"TG Err: {e}")
     return None
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# --- ОБРАБОТКА ВРЕМЕНИ (МСК) ---
+def convert_to_msk(date_str):
+    """
+    Превращает '14.10. 18:00' (Европа) в '14.10 20:00' (МСК)
+    Добавляем +2 часа (разница CET и МСК, грубо).
+    """
+    try:
+        # Убираем лишние точки если есть
+        clean_str = date_str.strip()
+        
+        # Добавляем текущий год для парсинга
+        current_year = datetime.now().year
+        dt = datetime.strptime(f"{clean_str}.{current_year}", "%d.%m. %H:%M.%Y")
+        
+        # Добавляем 2 часа (BetExplorer обычно в CET, МСК = CET+2)
+        dt_msk = dt + timedelta(hours=2)
+        
+        return dt_msk.strftime("%d.%m %H:%M (МСК)")
+    except:
+        # Если не получилось распарсить, возвращаем как есть
+        return date_str
+
+# --- ОБРАБОТКА НАЗВАНИЙ ---
 def get_team_names(match_name):
     parts = match_name.split(' - ')
     if len(parts) >= 2: return parts[0].strip(), parts[1].strip()
-    return match_name, "Guest"
+    return match_name, "Соперник"
 
 def format_pick(match_name, pick_raw):
     p = pick_raw.upper().strip()
     t1, t2 = get_team_names(match_name)
+    
     if p == '1': return f"Победа 1 <b>({t1})</b>"
     if p == '2': return f"Победа 2 <b>({t2})</b>"
     if p == 'X': return "Ничья <b>(X)</b>"
@@ -89,43 +113,49 @@ def scan_popular(driver, bets):
         try:
             driver.get(url)
             try:
-                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-main tr")))
+                # Ждем таблицу
+                WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-main tr")))
             except: continue
 
             rows = driver.find_elements(By.CSS_SELECTOR, "table.table-main tr")
             if len(rows) < 2: continue
             
             count = 0
+            # Пропускаем шапку [0]
             for row in rows[1:]:
                 try:
                     cols = row.find_elements(By.TAG_NAME, "td")
-                    # Нам нужно минимум 4 колонки: Матч, Исход, Кэф, Дата
+                    # Структура: [0]Матч, [1]Исход, [2]Кэф, [3]Дата
                     if len(cols) < 4: continue
                     
                     # 1. Ссылка и Название
-                    link_el = cols[0].find_element(By.TAG_NAME, "a")
-                    match_name = link_el.text.strip()
-                    link = link_el.get_attribute("href")
-                    
+                    try:
+                        link_el = cols[0].find_element(By.TAG_NAME, "a")
+                        match_name = link_el.text.strip()
+                        link = link_el.get_attribute("href")
+                    except: continue
+
                     if link in existing_urls: continue
                     
-                    # 2. Данные ставки
-                    pick_raw = cols[1].text.strip()
-                    odd = cols[2].text.strip()
+                    # 2. Данные (берем textContent, так надежнее)
+                    pick_raw = cols[1].get_attribute("textContent").strip()
+                    odd = cols[2].get_attribute("textContent").strip()
+                    date_raw = cols[3].get_attribute("textContent").strip()
                     
-                    # 3. Время матча (4-я колонка)
-                    match_time = cols[3].text.strip() 
-                    
-                    # Проверка на "битую" верстку
-                    if "." in pick_raw: continue 
-                    
+                    # Проверка на пустые данные (чтобы не было пустых сообщений)
+                    if not pick_raw or not odd: continue
+                    # Если в поле исхода попала дата или кэф (защита от сдвига)
+                    if "." in pick_raw and len(pick_raw) > 3: continue 
+
+                    # Форматирование
                     pretty_pick = format_pick(match_name, pick_raw)
+                    pretty_time = convert_to_msk(date_raw)
                     icon = ICONS.get(sport_name, '🏆')
                     
                     msg = (
                         f"🔥 <b>ТОП ПРОГРУЗ | {sport_name}</b>\n\n"
                         f"{icon} <b>{match_name}</b>\n"
-                        f"🕒 Начало: <b>{match_time}</b>\n"
+                        f"🕒 Начало: <b>{pretty_time}</b>\n"
                         f"🎯 {pretty_pick}\n"
                         f"💰 Кэф: <b>{odd}</b>\n"
                         f"🔗 <a href='{link}'>Открыть матч</a>"
@@ -145,8 +175,10 @@ def scan_popular(driver, bets):
                         time.sleep(1)
                         
                     count += 1
-                    if count >= 2: break 
-                except: continue
+                    if count >= 3: break # Лимит 3 матча на спорт
+                except Exception as e:
+                    # print(f"Row error: {e}") 
+                    continue
         except: continue
         
     return updated
@@ -170,31 +202,36 @@ def check_results(driver, bets):
                 status_text = driver.find_element(By.ID, "match-status-caption").text.strip()
             except: continue 
 
-            if "Finished" in status_text or "After" in status_text:
+            if "Finished" in status_text or "After" in status_text or "AET" in status_text:
                 parts = score_text.split(':')
                 if len(parts) == 2:
-                    s1, s2 = int(parts[0]), int(parts[1])
-                    result = "LOSE"
-                    if pick == '1' and s1 > s2: result = "WIN"
-                    elif pick == '2' and s2 > s1: result = "WIN"
-                    elif pick == 'X' and s1 == s2: result = "WIN"
-                    
-                    icon = "✅" if result == "WIN" else "❌"
-                    reply = f"{icon} <b>{result}</b>\nСчет: <b>{score_text}</b>"
-                    
-                    send_telegram(reply, reply_to=msg_id)
-                    
-                    bet['status'] = 'finished'
-                    bet['result'] = result
-                    updated = True
-                    time.sleep(1)
+                    try:
+                        s1, s2 = int(parts[0]), int(parts[1])
+                        result = "LOSE"
+                        if pick == '1' and s1 > s2: result = "WIN"
+                        elif pick == '2' and s2 > s1: result = "WIN"
+                        elif pick == 'X' and s1 == s2: result = "WIN"
+                        
+                        icon = "✅" if result == "WIN" else "❌"
+                        # Переводим WIN/LOSE на русский
+                        res_ru = "ЗАХОД" if result == "WIN" else "МИНУС"
+                        
+                        reply = f"{icon} <b>{res_ru}</b>\nСчет: <b>{score_text}</b>"
+                        
+                        send_telegram(reply, reply_to=msg_id)
+                        
+                        bet['status'] = 'finished'
+                        bet['result'] = result
+                        updated = True
+                        time.sleep(1)
+                    except: continue
         except: continue
             
     return updated
 
 # --- ЗАПУСК ЦИКЛА ---
 def run_eternal_loop():
-    print("🚀 Бот запущен (с отображением Времени)")
+    print("🚀 Бот запущен (Fix: Время МСК + Колонки)")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
@@ -213,18 +250,24 @@ def run_eternal_loop():
     
     try:
         while True:
+            # Таймер работы (чтобы GitHub не убил процесс жестко)
             elapsed_min = (time.time() - start_time) / 60
             if elapsed_min >= WORK_DURATION_MINUTES:
-                print("⏰ Перезагрузка...")
+                print("⏰ Время вышло. Перезагрузка...")
                 break
             
             has_updates = False
+            
+            # 1. Проверяем результаты
             if check_results(driver, bets): has_updates = True
+            
+            # 2. Ищем новые ставки
             if scan_popular(driver, bets): has_updates = True
             
             if has_updates:
                 save_bets(bets)
             
+            # Спим 3 минуты
             print("💤 Сплю 3 минуты...")
             time.sleep(180)
             
